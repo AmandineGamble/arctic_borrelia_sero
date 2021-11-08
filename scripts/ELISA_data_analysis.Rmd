@@ -1,6 +1,6 @@
 ---
 title: "Climate change in the Arctic: a poleward expansion of ticks and tick-borne diseases? - Immunological analyses"
-author: "Amandine Gamble"
+author: "Amandine Gamble, Dr"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output:
   html_document:
