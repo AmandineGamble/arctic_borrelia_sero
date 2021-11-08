@@ -1,0 +1,731 @@
+---
+title: "Climate change in the Arctic: a poleward expansion of ticks and tick-borne diseases? - Immunological analyses"
+author: "Amandine Gamble"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    theme: united
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+<style type="text/css">
+  body{/* Normal */ font-size: 12px;}
+  h1.title{font-size: 22px;}
+  h1{/* Header 1 */ font-size: 18px;}
+  h2{/* Header 2 */ font-size: 16px;}
+  h3{ /* Header 2 */ font-size: 14px;}
+  code.r{/* Code block */ font-size: 10px;}
+  pre{/* Code block - determines code spacing between lines */ font-size: 10px;}
+</style>
+
+# Working space prepatation
+
+```{r, warning = F, message = F}
+
+# working directory to be adapted if needed
+# setwd("")
+
+# import data
+sample_list = read.csv("data_clean/ELISA_arctic_borrelia_201510_sample_list.csv",sep = ";", header = T)
+elisa_data = read.csv("data_clean/ELISA_arctic_borrelia_201510_ELISA_data.csv",sep = ";", header = T)
+
+```
+
+```{r}
+
+knitr::opts_chunk$set(warning = F, message = F, fig.align = "center")
+
+# list packages
+packages = c("ggplot2", "patchwork", # plots
+             "mixtools", "MASS", # mixture of distributions
+             "lme4") # generalized linear mixed models
+
+# install (if needed) and load packages
+suppressMessages(invisible(lapply(
+ packages,
+ function(x) {
+  if (!require(x, character.only = T)) {
+   install.packages(x, dependencies = T)
+   library(x, character.only = T)
+  }
+ }
+)))
+
+# plot settings
+ggtheme = theme_bw() +
+  theme(
+    plot.title = element_text(size = 10, hjust = 0.5, face = "bold"),
+    plot.margin = margin(5, 5, 5, 5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title.y.right = element_text(angle = 90),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8, color = "black"),
+    axis.line = element_line(size = 0.25, color = "black"),
+    axis.ticks = element_line(size = 0.25, color = "black"),
+    strip.text = element_text(size = 8),
+    strip.background = element_blank(),
+    legend.margin = margin(2, 2, 2, 2),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8),
+    legend.key = element_rect(fill = NA, color = NA),
+    legend.key.size = unit(0.4, "cm"),
+    legend.background = element_rect(colour = "transparent", fill = ggplot2::alpha("white", 0))
+  )
+
+# color settings
+col = c(neg = "#9ed99a", pos = "#8c34a9")
+
+```
+
+```{r}
+
+elisa_data$plate = as.factor(elisa_data$plate)
+
+# merge sample metadata and ELISA data
+data_complete = merge(sample_list, elisa_data, by = c("sample_id"), all.x = T, all.y = T)
+data_complete = subset(data_complete, !is.na(sample_id))
+
+# check for missing samples
+# View(data_complete[is.na(data_complete$OD_raw), ])
+# View(data_complete[is.na(data_complete$sample_type), ])
+
+data = aggregate(OD_adj ~ sample_id + plate + species + site + campaign, 
+                 data = data_complete, 
+                 FUN = "mean")
+
+```
+
+<br>
+<br>
+
+# 1. Interplate correction
+
+<br>
+<br>
+
+## 1.1. Function for interplate regression
+
+```{r}
+
+get_reg=function(data,ref_plate){
+  # replicates
+  replicates=data[duplicated(data$sample_id) & !grepl("cont",data$sample_id),]$sample_id
+  rep_data=data[is.element(data$sample_id,replicates),]
+  
+  rep_data = subset(rep_data, select = c("sample_id", "plate", "OD_adj"))
+  
+  regressions=as.data.frame(matrix(nrow=length(levels(rep_data$plate)),ncol=5))
+  colnames(regressions)=c("plate","ref","intercept","slope","rsquared")
+  
+  OD_min = floor(min(rep_data$OD_adj)) 
+  OD_max = ceiling(max(rep_data$OD_adj))
+  
+  for (i in 1:length(levels(rep_data$plate))){
+    tryCatch({
+      per_plate=merge(subset(rep_data,plate==levels(rep_data$plate)[i]),subset(rep_data,plate==ref_plate),by="sample_id")
+      colnames(per_plate)=c("sample_id","plate","plate_OD","ref","ref_OD")
+      reg=lm(plate_OD~ref_OD,data=per_plate)
+      #plot(plate_OD~ref_OD,data=per_plate);text(plate_OD~ref_OD,labels=sample_id,cex=0.5,data=per_plate,pos=1)
+      p=ggplot(data=per_plate,aes(x=ref_OD,y=plate_OD)) + 
+        geom_point()+geom_smooth(method="lm",se=F,colour="black",linetype="dashed",size=0.5)+
+        xlab(paste0("OD on Plate ",per_plate$ref))+ylab(paste0("OD on Plate ",per_plate$plate))+
+        ggtitle("Interplate regression")+
+        coord_fixed(ratio=1, xlim = c(OD_min, OD_max), ylim = c(OD_min, OD_max))+
+        ggtheme
+      #print(p)
+      
+      regressions$plate[i]=levels(rep_data$plate)[i]
+      regressions$ref[i]=ref_plate
+      regressions$intercept[i]=reg$coefficients[1]
+      regressions$slope[i]=reg$coefficients[2]
+      regressions$rsquared[i]=summary(reg)$r.squared
+    }, error=function(e){cat("ERROR : at plate",paste(levels(rep_data$plate)[i]),"\n")})
+  }
+  
+  return(regressions)
+}
+
+#########################################################
+# Calculate position and dispersion parameters
+
+get_stat=function(data=NULL, measurevar, groupvars=NULL, na.rm=TRUE, conf.interval=.95, .drop=FALSE){
+  
+  for (i in 1:length(groupvars)){data[[groupvars[i]]]=as.factor(as.character(data[[groupvars[i]]]))}
+  
+  library(plyr)
+  
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  
+  datac <- ddply(data, groupvars, .drop=.drop,
+                 .fun = function(xx, col) {
+                   c(n= length2(xx[[col]],na.rm=na.rm),
+                     mean=round(mean(xx[[col]],na.rm=na.rm),digit=2),
+                     sd=round(sd(xx[[col]], na.rm=na.rm),digit=2),
+                     se=NA,
+                     ci=NA,
+                     min= min(xx[[col]], na.rm=na.rm),
+                     q25=quantile(xx[[col]], na.rm=na.rm)[2][[1]],
+                     median=median(xx[[col]], na.rm=na.rm),
+                     q75=quantile(xx[[col]], na.rm=na.rm)[4][[1]],
+                     max=max(xx[[col]], na.rm=na.rm)
+                   )
+                 },
+                 measurevar
+  )
+  
+  
+  datac$se <- round(datac$sd / sqrt(datac$n),digit=2)
+  
+  ciMult <- qt(conf.interval/2 + .5, datac$n-1)
+  datac$ci <- round(datac$se * ciMult,digit=2)
+  
+  return(datac)
+}
+
+```
+
+<br>
+<br>
+
+## 1.2. Exploration of the plate effect on OD (before correction)
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+# select the interplate replicate samples
+replicates = unique(data[duplicated(data$sample_id), ]$sample_id)
+
+# null model explaining variations of OD accounting for a (random) sample effect
+mod_no_plate_effect = lmer(OD_adj ~ (1 | sample_id), 
+                           data = data[is.element(data$sample_id, replicates) == T, ])
+
+# same model + accounting for a (fixed) plate effect
+mod_plate_effect = lmer(OD_adj ~ plate + (1 | sample_id), 
+                        data = data[is.element(data$sample_id, replicates) == T, ])
+# model comparison
+anova(mod_no_plate_effect, mod_plate_effect)
+
+# violin plot
+ggplot(data[is.element(data$sample_id, replicates) == T, ], aes(y = OD_adj, x = plate)) +
+  geom_violin() + geom_point(aes(color = sample_id)) +
+  xlab("Plate") + ylab("Adjusted OD (/plate controls)") +
+  ggtitle("Before correction") +
+  ggtheme + theme(legend.position = "none")
+
+```
+
+<br>
+<br>
+
+## 1.3. Interplate regressions and correction
+
+```{r,warning=FALSE,message=FALSE,fig.width=7*0.4,fig.height=7*0.4}
+
+# fit the regressions using th home-made function get_reg()
+regressions=get_reg(data,"3")
+regressions
+
+# correct the OD based on the regressions
+for (i in 1:nrow(regressions)){
+  plate=data[data$plate==regressions$plate[i],]
+  plate$ref=regressions$ref[i]
+  plate$OD_cor=(-regressions$intercept[i]+plate$OD_adj)/regressions$slope[i]
+  
+  if (i==1){data_corrected=plate
+  }else{data_corrected=rbind(data_corrected,plate)}
+}
+remove(i)
+
+# formatting
+data_corrected$plate=as.factor(data_corrected$plate)
+
+```
+
+<br>
+<br>
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+# plot before correction
+ggplot(subset(data_corrected,is.element(sample_id,replicates)),aes(x=as.numeric(plate),y=OD_adj,colour=sample_id))+
+  geom_point()+geom_line()+
+  xlab("Plate")+ylab("Adjusted OD (/plate controls)")+
+  ggtitle("Before correction")+
+  ggtheme
+
+# plot after correction
+ggplot(subset(data_corrected,is.element(sample_id,replicates)),aes(x=as.numeric(plate),y=OD_cor,colour=sample_id))+
+  geom_point()+geom_line()+
+  xlab("Plate")+ylab("Corrected OD (/interplate variations)")+
+  ggtitle("After correction")+
+  ggtheme
+
+remove(i)
+
+```
+
+<br>
+<br>
+
+## 1.4. Exploration of the plate effect on corrected OD (after correction)
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+# model fitting and comparison (similarly as above but on corrected OD)
+mod_sample_effect_cor=lmer(OD_cor~(1|sample_id),data=data_corrected[is.element(data_corrected$sample_id,replicates)==T,])
+mod_plate_effect_cor=lmer(OD_cor~plate+(1|sample_id),data=data_corrected[is.element(data_corrected$sample_id,replicates)==T,])
+anova(mod_sample_effect_cor,mod_plate_effect_cor)
+
+# violin plot
+ggplot(data_corrected[is.element(data_corrected$sample_id,replicates)==T,],aes(y=OD_cor,x=plate))+
+  geom_violin()+geom_point()+
+  xlab("Plate")+ylab("Corrected OD (/interplate variations)")+
+  ggtitle("After correction")+
+  ggtheme
+
+# box plot
+ggplot(data_corrected[is.element(data_corrected$sample_id,replicates)==T,],aes(y=OD_cor,x=plate))+
+  geom_boxplot()+geom_point()+
+  xlab("Plate")+ylab("Corrected OD (/interplate variations)")+
+  ggtitle("After correction")+
+  ggtheme
+
+remove(mod_sample_effect,mod_plate_effect,mod_sample_effect_cor,mod_plate_effect_cor,plate,regressions,replicates)
+
+```
+
+<br>
+<br>
+
+# 2. ELISA cut-off 
+
+Method described in <a href="https://doi.org/10.1111/1365-2435.12942" target="_blank">Garnier et al.,2017,Functional Ecology</a>
+
+<br>
+<br>
+
+## 2.1. Kittiwakes, all sites, OD corrected for inter-plate variaions
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+data_rissa_complete = aggregate(OD_cor~sample_id + site, subset(data_corrected, species == "Rissa tridactyla"), FUN = "mean")
+data_uria_complete = aggregate(OD_cor~sample_id + site, subset(data_corrected, species == "Uria lomvia"), FUN = "mean")
+
+data_rissa_ossian = subset(data_rissa_complete, site == "Ossian")
+data_uria_ossian = subset(data_uria_complete,  site == "Ossian")
+
+data = data_rissa_complete
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_cor))$OD_cor,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_cor))$OD_cor,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_rissa_complete = mixnorm
+cut95_rissa_complete=mixnorm_rissa_complete$mu[1]+2*mixnorm_rissa_complete$sigma[1]
+cut99_rissa_complete=mixnorm_rissa_complete$mu[1]+3*mixnorm_rissa_complete$sigma[1]
+
+
+# plot
+x= seq(0, 6, 0.01)
+pred_rissa_complete = data.frame(cbind(x = x, y1 = dnorm(x,mean=mixnorm_rissa_complete$mu[1],sd=mixnorm_rissa_complete$sigma[1])*2.5, y2 = dnorm(x,mean=mixnorm_rissa_complete$mu[2],sd=mixnorm_rissa_complete$sigma[2])*2.5))
+p1 = ggplot() + 
+  geom_histogram(data = data_rissa_complete, aes(x = OD_cor, fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_line(data = pred_rissa_complete, aes(x=x, y=y1, colour="#8c34a9"), size = 0.75, alpha = 0.7) +
+  geom_line(data = pred_rissa_complete, aes(x=x, y=y2, colour="#9ed99a"), size = 0.75, alpha = 0.7) +
+  geom_vline(aes(xintercept=cut99_rissa_complete),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95_rissa_complete),linetype="dashed",size=0.5)+
+  ylab("Number of samples")+xlab("Mean optical density (anti-Bbsl ELISA)")+
+  ggtheme+
+    scale_fill_manual(values = c("gray90", "grey50"), labels = c("Hornøya", "Ossian")) +
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  ggtitle("Black-legged kittiwakes")+ ylim(c(0,25)) + xlim(c(0,6)) +
+  annotate("text", x=0.2, y=25, label= "Negative", size = 2) +
+  annotate("text", x=1.5, y=25, label= "Positive", size = 2) 
+
+p1
+```
+<br>
+<br>
+
+## 2.2. Guillemots, all sites, OD corrected for inter-plate variaions
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+data = data_uria_complete 
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_cor))$OD_cor,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_cor))$OD_cor,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_uria_complete = mixnorm
+cut95_uria_complete=mixnorm_uria_complete$mu[1]+2*mixnorm_uria_complete$sigma[1]
+cut99_uria_complete=mixnorm_uria_complete$mu[1]+3*mixnorm_uria_complete$sigma[1]
+
+pred_uria_complete = data.frame(cbind(x = x, y1 = dnorm(x,mean=mixnorm_uria_complete$mu[1],sd=mixnorm_uria_complete$sigma[1])*5, y2 = dnorm(x,mean=mixnorm_uria_complete$mu[2],sd=mixnorm_uria_complete$sigma[2])*5))
+p2 = ggplot() + 
+  geom_histogram(data = data_uria_complete, aes(x = OD_cor, fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_line(data = pred_uria_complete, aes(x=x, y=y1, colour="#8c34a9"), size = 0.75, alpha = 0.7) +
+  geom_line(data = pred_uria_complete, aes(x=x, y=y2, colour="#9ed99a"), size = 0.75, alpha = 0.7) +
+  geom_vline(aes(xintercept=cut99_uria_complete),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95_uria_complete),linetype="dashed",size=0.5)+
+  ylab("Number of samples")+xlab("Mean optical density (anti-Bbsl ELISA)")+
+  ggtheme+
+    scale_fill_manual(values = c("gray90", "grey50"), labels = c("Hornøya", "Ossian")) +
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  ggtitle("Brünnich guillemots")+ ylim(c(0,25)) + xlim(c(0,6)) +
+  annotate("text", x=0.5, y=25, label= "Negative", size = 2) +
+  annotate("text", x=2, y=25, label= "Positive", size = 2) 
+
+p2
+
+```
+
+<br>
+<br>
+
+## 2.3. Publication figure
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+#ggsave("export/elisa_OD_distribution.pdf",width=14,height=7,units="cm",dpi=300)
+
+((p1) | (p2  + theme(axis.title.y = element_blank(), axis.text.y = element_blank())) ) + plot_layout(guides = "collect") & theme(legend.position = 'bottom', legend.direction="vertical")
+
+ggsave("export/arctic_borrelia_ELISA_distribution.pdf",width=15,height=9,units="cm",dpi=300)
+```
+
+## 2.4. Sample classification
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+# save serological status
+data_rissa_complete$sero_pos=NA
+data_rissa_complete[!is.na(data_rissa_complete$OD_cor) & data_rissa_complete$OD_cor>cut99_rissa_complete,"sero_pos"]="positive"
+data_rissa_complete[!is.na(data_rissa_complete$OD_cor) & data_rissa_complete$OD_cor<=cut99_rissa_complete,"sero_pos"]="doubtful"
+data_rissa_complete[!is.na(data_rissa_complete$OD_cor) & data_rissa_complete$OD_cor<=cut95_rissa_complete,"sero_pos"]="negative"
+
+data_uria_complete$sero_pos=NA
+data_uria_complete[!is.na(data_uria_complete$OD_cor) & data_uria_complete$OD_cor>cut99_uria_complete,"sero_pos"]="positive"
+data_uria_complete[!is.na(data_uria_complete$OD_cor) & data_uria_complete$OD_cor<=cut99_uria_complete,"sero_pos"]="doubtful"
+data_uria_complete[!is.na(data_uria_complete$OD_cor) & data_uria_complete$OD_cor<=cut95_uria_complete,"sero_pos"]="negative"
+
+write.table(data,"export/data.csv",quote=F,col.names=T,row.names=F,sep=";",dec=".")
+
+remove(mixnorm,AIC2n,norm1,AIC1n)
+
+length(unique(data_rissa_complete$sample_id))
+length(unique(data_uria_complete$sample_id))
+length(unique(data_rissa_ossian$sample_id))
+length(unique(data_uria_ossian$sample_id))
+sum(sample_list$species == "Uria lomvia")
+
+```
+
+# 3. Verifications 
+<br>
+<br>
+
+## 3.1. Plot by plate
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+ggplot() + 
+  geom_histogram(data = subset(data_corrected, !is.na(species)), aes(x = OD_adj, fill = plate),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+    ylab("Number of samples")+xlab("Uncorrected optical density (anti-Bbsl ELISA)")+
+  ggtheme+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  xlim(c(0,6)) +
+  facet_grid(site ~ species)
+
+ggplot() + 
+  geom_histogram(data = subset(data_corrected, !is.na(species)), aes(x = OD_cor, fill = plate),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+    ylab("Number of samples")+xlab("Corrected dptical density (anti-Bbsl ELISA)")+
+  ggtheme+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  xlim(c(0,6)) +
+  facet_grid(site ~ species)
+
+```
+
+## 3.1. Kittiwakes, Ossian only, OD corrected for inter-plate variaions
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+
+data = data_rissa_ossian
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_cor))$OD_cor,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_cor))$OD_cor,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_rissa_ossian = mixnorm
+cut95_rissa_ossian=mixnorm_rissa_ossian$mu[1]+2*mixnorm_rissa_ossian$sigma[1]
+cut99_rissa_ossian=mixnorm_rissa_ossian$mu[1]+3*mixnorm_rissa_ossian$sigma[1]
+
+# plot
+ggplot(data, aes(x = OD_cor)) + 
+  stat_function(aes(colour="#8c34a9"),fun=dnorm,args=list(mean=mixnorm$mu[1],sd=mixnorm$sigma[1]),size=0.5)+
+  stat_function(aes(colour="#9ed99a"),fun=dnorm,args=list(mean=mixnorm$mu[2],sd=mixnorm$sigma[2]),size=0.5)+
+  geom_histogram(aes(y=..density.., fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_vline(aes(xintercept=cut99),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95),linetype="dashed",size=0.5)+
+  ylab("Density")+xlab("Optical density (ELISA)")+
+  ggtheme+
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  scale_fill_manual(values = c("gray90", "grey50")) +
+  theme(legend.justification=c(1,1),legend.position=c(1,1))
+```
+
+<br>
+<br>
+
+## 3.4. Guillemots, Ossian only, OD corrected for inter-plate variaions
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+data = data_uria_ossian 
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_cor))$OD_cor,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_cor))$OD_cor,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_uria_ossian = mixnorm
+cut95_uria_ossian=mixnorm_uria_ossian$mu[1]+2*mixnorm_uria_ossian$sigma[1]
+cut99_uria_ossian=mixnorm_uria_ossian$mu[1]+3*mixnorm_uria_ossian$sigma[1]
+
+# plot
+ggplot(data, aes(x = OD_cor)) + 
+  stat_function(aes(colour="#8c34a9"),fun=dnorm,args=list(mean=mixnorm$mu[1],sd=mixnorm$sigma[1]),size=0.5)+
+  stat_function(aes(colour="#9ed99a"),fun=dnorm,args=list(mean=mixnorm$mu[2],sd=mixnorm$sigma[2]),size=0.5)+
+  geom_histogram(aes(y=..density.., fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_vline(aes(xintercept=cut99),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95),linetype="dashed",size=0.5)+
+  ylab("Density")+xlab("Optical density (ELISA)")+
+  ggtheme+
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  scale_fill_manual(values = c("gray90", "grey50")) +
+  theme(legend.justification=c(1,1),legend.position=c(1,1))
+
+```
+
+
+## 3.2. Kittiwakes, all sites, uncorrected OD
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+data_rissa_complete_uncor = aggregate(OD_adj~sample_id + site, subset(data_corrected, species == "Rissa tridactyla"), FUN = "mean")
+data_uria_complete_uncor = aggregate(OD_adj~sample_id + site, subset(data_corrected, species == "Uria lomvia"), FUN = "mean")
+
+data_rissa_ossian_uncor = subset(data_rissa_complete_uncor, site == "Ossian")
+data_uria_ossian_uncor = subset(data_uria_complete_uncor,  site == "Ossian")
+
+data = data_rissa_complete_uncor
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_adj))$OD_adj,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_adj))$OD_adj,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_rissa_complete_uncor = mixnorm
+cut95_rissa_complete_uncor=mixnorm_rissa_complete_uncor$mu[1]+2*mixnorm_rissa_complete_uncor$sigma[1]
+cut99_rissa_complete_uncor=mixnorm_rissa_complete_uncor$mu[1]+3*mixnorm_rissa_complete_uncor$sigma[1]
+
+
+# plot
+x= seq(0, 6, 0.01)
+pred_rissa_complete_uncor = data.frame(cbind(x = x, y1 = dnorm(x,mean=mixnorm_rissa_complete_uncor$mu[1],sd=mixnorm_rissa_complete_uncor$sigma[1])*2.5, y2 = dnorm(x,mean=mixnorm_rissa_complete_uncor$mu[2],sd=mixnorm_rissa_complete_uncor$sigma[2])*2.5))
+ggplot() + 
+  geom_histogram(data = data_rissa_complete_uncor, aes(x = OD_adj, fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_line(data = pred_rissa_complete_uncor, aes(x=x, y=y1, colour="#8c34a9"), size = 0.75, alpha = 0.7) +
+  geom_line(data = pred_rissa_complete_uncor, aes(x=x, y=y2, colour="#9ed99a"), size = 0.75, alpha = 0.7) +
+  geom_vline(aes(xintercept=cut99_rissa_complete_uncor),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95_rissa_complete_uncor),linetype="dashed",size=0.5)+
+  ylab("Number of samples")+xlab("Mean optical density (anti-Bbsl ELISA)")+
+  ggtheme+
+    scale_fill_manual(values = c("gray90", "grey50"), labels = c("Hornøya", "Ossian")) +
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  ggtitle("Black-legged kittiwakes")+ ylim(c(0,25)) + xlim(c(0,6)) +
+  annotate("text", x=0.2, y=25, label= "Negative", size = 2) +
+  annotate("text", x=1.5, y=25, label= "Positive", size = 2) 
+
+```
+<br>
+<br>
+
+## 3.4. Guillemots, all sites, uncorrected OD
+
+```{r,warning=FALSE,message=FALSE,fig.width=14*0.4,fig.height=7*0.4}
+data = data_uria_complete_uncor 
+# fits two normal distributions to the corrected OD values
+mixnorm<-normalmixEM(subset(data,!is.na(OD_adj))$OD_adj,eps=1e-12,lambda=0.5,mu=c(0,1),sigma=c(0.1,1),k=2)
+# fits one normal distribution to the same data as above
+norm1<-fitdistr(subset(data,!is.na(OD_adj))$OD_adj,"normal")
+# manually calculate AIC 
+AIC1n<-2*2-2*norm1$loglik
+AIC2n<-4*2-2*mixnorm$loglik
+c(AIC1n,AIC2n)
+if (AIC2n<AIC1n-2){print("Two normal distributions")}else{print("One unique normal distribution")}
+cut95=mixnorm$mu[1]+2*mixnorm$sigma[1]
+cut99=mixnorm$mu[1]+3*mixnorm$sigma[1]
+c(cut95,cut99)
+
+mixnorm_uria_complete_uncor = mixnorm
+cut95_uria_complete_uncor=mixnorm_uria_complete_uncor$mu[1]+2*mixnorm_uria_complete_uncor$sigma[1]
+cut99_uria_complete_uncor=mixnorm_uria_complete_uncor$mu[1]+3*mixnorm_uria_complete_uncor$sigma[1]
+
+pred_uria_complete_uncor = data.frame(cbind(x = x, y1 = dnorm(x,mean=mixnorm_uria_complete_uncor$mu[1],sd=mixnorm_uria_complete_uncor$sigma[1])*5, y2 = dnorm(x,mean=mixnorm_uria_complete_uncor$mu[2],sd=mixnorm_uria_complete_uncor$sigma[2])*5))
+ggplot() + 
+  geom_histogram(data = data_uria_complete_uncor, aes(x = OD_adj, fill = site),
+                 binwidth=.1,size=0.25,
+                 colour="black")+
+  geom_line(data = pred_uria_complete_uncor, aes(x=x, y=y1, colour="#8c34a9"), size = 0.75, alpha = 0.7) +
+  geom_line(data = pred_uria_complete_uncor, aes(x=x, y=y2, colour="#9ed99a"), size = 0.75, alpha = 0.7) +
+  geom_vline(aes(xintercept=cut99_uria_complete_uncor),linetype="dashed",size=0.5)+
+  geom_vline(aes(xintercept=cut95_uria_complete_uncor),linetype="dashed",size=0.5)+
+  ylab("Number of samples")+xlab("Mean optical density (anti-Bbsl ELISA)")+
+  ggtheme+
+    scale_fill_manual(values = c("gray90", "grey50"), labels = c("Hornøya", "Ossian")) +
+  scale_color_manual(values=c("#9ed99a","#8c34a9"),labels=c("ELISA-negative sample distribution","ELISA-positive sample distribution"))+
+  theme(legend.justification=c(1,1),legend.position=c(1,1)) +
+  ggtitle("Brünnich guillemots")+ ylim(c(0,25)) + xlim(c(0,6)) +
+  annotate("text", x=0.5, y=25, label= "Negative", size = 2) +
+  annotate("text", x=2, y=25, label= "Positive", size = 2) 
+
+```
+
+<br>
+<br>
+
+
+
+# 4. Seroprevalences
+
+<br>
+<br>
+
+```{r,warning=FALSE,message=FALSE}
+get_prev=function(data=NULL, measurevar, groupvars=NULL, na.rm=TRUE, conf.interval=.95, .drop=FALSE){
+  
+  for (i in 1:length(groupvars)){data[[groupvars[i]]]=as.factor(as.character(data[[groupvars[i]]]))}
+  
+  library(plyr)
+  library(PropCIs)
+  
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  
+  datac1 <- ddply(data, groupvars, .drop=.drop,
+                  .fun = function(xx, col) {
+                    c(n=length2(xx[[col]],na.rm=na.rm)
+                    )
+                  },
+                  measurevar
+  )
+  
+  datac2 <- ddply(subset(data,data[[measurevar]]==1 | data[[measurevar]]=="pos"), groupvars, .drop=.drop,
+                  .fun = function(xx, col) {
+                    c(pos=length2(xx[[col]],na.rm=na.rm)
+                    )
+                  },
+                  measurevar
+  )
+  
+  datac=merge(datac1,datac2)
+  
+  datac$prev <- round(datac$pos/datac$n,digit=2)
+  
+  for (i in 1:nrow(datac)){
+    if (is.na(datac$prev[i])){datac$CImin[i]=NA;datac$CImax[i]=NA
+    }else{
+      datac$CImin[i] <- round(exactci(datac$pos[i],datac$n[i],conf.interval)$conf.int[1],digit=2)
+      datac$CImax[i] <- round(exactci(datac$pos[i],datac$n[i],conf.interval)$conf.int[2],digit=2)      
+    }
+  }
+  
+  return(datac)
+}
+
+data_unique=subset(data_corrected,!duplicated(sample_id) & !grepl("cont",sample_id))
+```
+
+
+## 4.1. Kittiwakes, Ossian
+
+```{r,warning=FALSE,message=FALSE}
+sum(data_rissa_complete$site == "Ossian" & data_rissa_complete$sero_pos == "positive")
+sum(data_rissa_complete$site == "Ossian" & data_rissa_complete$sero_pos == "positive")/sum(data_rissa_complete$site == "Ossian")
+sum(data_rissa_complete$site == "Ossian" & data_rissa_complete$sero_pos == "doubtful")
+```
+
+## 4.2. Guillemots, Ossian
+
+```{r,warning=FALSE,message=FALSE}
+sum(data_uria_complete$site == "Ossian" & data_uria_complete$sero_pos == "positive")
+sum(data_uria_complete$site == "Ossian" & data_uria_complete$sero_pos == "positive")/sum(data_uria_complete$site == "Ossian")
+sum(data_uria_complete$site == "Ossian" & data_uria_complete$sero_pos == "doubtful")
+sum(data_uria_complete$site == "Ossian")
+
+```
+
+<br>
+<br>
+
+rmarkdown::render("C:/Users/Gamble/PhD Eco-epidemiology/On_going/data_and_analyses/deers/3_analyses/ELISA_borrelia_deers.rmd",output_format="html_document")
