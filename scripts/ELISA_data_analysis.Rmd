@@ -619,8 +619,3 @@ sum(data_uria_complete$site == "Ossian" & data_uria_complete$sero_pos == "doubtf
 sum(data_uria_complete$site == "Ossian")
 
 ```
-
-<br>
-<br>
-
-rmarkdown::render("C:/Users/Gamble/PhD Eco-epidemiology/On_going/data_and_analyses/deers/3_analyses/ELISA_borrelia_deers.rmd",output_format="html_document")
