@@ -1,4 +1,4 @@
-# Climate change in the Arctic: testing the poleward expansion of ticks and tick-borne diseases - Serological data and analyses
+# Climate change in the Arctic: testing the poleward expansion of ticks and tick-borne diseases - Immunological data and analyses
 
 Karen D. McCoy<sup>1,2</sup>, Céline Toty<sup>2</sup>, Marlène Dupraz<sup>2</sup>, Jérémy Tornos<sup>2,3</sup>, Amandine Gamble<sup>3</sup>, Romain Garnier<sup>3</sup>, Sébastien Descamps<sup>4</sup>, Thierry Boulinier<sup>3</sup>
 
@@ -11,7 +11,7 @@ Article corresponding author: [karen.mccoy@ird.fr](mailto:karen.mccoy@ird.fr) <b
 Serological dataset and analysis corresponding author: [amandine.gamble@gmail.com](mailto:amandine.gamble@gmail.com)
 
 ## Repository information
-This repository accompanies the article "Climate change in the Arctic: testing the poleward expansion of ticks and tick-borne diseases" (McCoy et al. 2022). It focuses on **serological data and analysis** only. Statistical results and plots are presented <a href="https://htmlpreview.github.io/?https://github.com/AmandineGamble/arctic_borrelia_sero/blob/main/ELISA_data_analysis.html" target="_blank">this R notebook</a>. The code for reproducing the statistical analyses and recreating associated display figures is also included in this repository. 
+This repository accompanies the article "Climate change in the Arctic: testing the poleward expansion of ticks and tick-borne diseases" (McCoy et al. 2022). It focuses on **immunological data and analysis** only. Statistical results and plots are presented <a href="https://htmlpreview.github.io/?https://github.com/AmandineGamble/arctic_borrelia_sero/blob/main/ELISA_data_analysis.html" target="_blank">this R notebook</a>. The code for reproducing the statistical analyses and recreating associated display figures is also included in this repository. 
 
 ## Citation information
 If you use the code or data provided here, please make sure to cite our work as below: <br>
